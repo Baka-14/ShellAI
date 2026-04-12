@@ -1,0 +1,13 @@
+# --- ElevenLabs Conversational AI (student voice) ---
+# Public agent (no API key in the browser): set agent id from the ElevenLabs dashboard.
+VITE_ELEVENLABS_AGENT_ID=
+
+# Private agent: use a backend-signed URL (never expose xi-api-key to the client).
+# VITE_ELEVENLABS_USE_SIGNED_URL=true
+# VITE_CONVAI_SIGNING_URL=http://127.0.0.1:8787/signed-url
+
+# If the agent did not emit parseable JSON, fall back to demo structured data (dev only).
+# VITE_USE_EXAMPLE_ADVISOR=false
+
+# End the ConvAI session automatically when agent messages parse to complete intake JSON (default on).
+# VITE_CONVAI_AUTO_END=false
