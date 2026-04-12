@@ -221,7 +221,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from elevenlabs.client import ElevenLabs
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from ollama import chat
@@ -229,6 +229,8 @@ from ollama import chat
 from terp_llm import extract_json_object
 from jupiterp import fetch_courses_for_preferences
 from planetterp import enrich_jupiterp_with_planetterp
+# from terpai_client import compute_terpai_scheduling_summary  # disabled: no terpai_scheduling on /getCourses
+from terpai_umd_routes import router as terpai_umd_router
 
 load_dotenv()
 
@@ -262,12 +264,18 @@ key-value pairs you find in the conversation.
   },
   "social": {
     "wants_study_partners": <true or false>
+  },
+  "goal": {
+    "statement": "<one concise sentence: what the student wants to achieve, in their own intent>",
+    "category": "<exactly one of: academic_performance | research | career_placement | course_planning | graduation_timeline | exploration | other>",
+    "targets": ["<optional concrete targets they stated, e.g. raise GPA to 3.8, publish at NeurIPS, land ML internship>"]
   }
 }
 
 Rules:
 - Return ONLY valid JSON. No markdown fences, no commentary.
 - For interest_keywords, produce short lowercase tokens useful for course-catalog search.
+- **goal**: Include when the student expresses an outcome they want (raise GPA, focus on NLP research, finish degree by Spring 2027, get internship, etc.). Set **category** from their primary intent; put numbers or named outcomes in **targets** when stated. If they only discuss interests with no outcome, omit **goal** entirely.
 - If the student never mentioned a field, omit it entirely rather than guessing.
 """.strip()
 
@@ -388,23 +396,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(terpai_umd_router)
 
-elevenlabs = ElevenLabs(api_key=os.getenv("ELEVEN_LABS_API"))
-AGENT_ID = os.getenv("ELEVEN_LABS_AGENT_ID")
+# Prefer ELEVENLABS_* (matches backend/.env.example). ELEVEN_LABS_* kept for older local .env files.
+_ELEVENLABS_API_KEY = (
+    os.getenv("ELEVENLABS_API_KEY", "").strip()
+    or os.getenv("ELEVEN_LABS_API", "").strip()
+)
+_ELEVENLABS_AGENT_ID = (
+    os.getenv("ELEVENLABS_AGENT_ID", "").strip()
+    or os.getenv("ELEVEN_LABS_AGENT_ID", "").strip()
+)
+_elevenlabs_client = ElevenLabs(api_key=_ELEVENLABS_API_KEY) if _ELEVENLABS_API_KEY else None
+
+
+def _require_elevenlabs():
+    if not _ELEVENLABS_API_KEY or not _ELEVENLABS_AGENT_ID or _elevenlabs_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ElevenLabs is not configured. Set ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID "
+                "in backend/.env (see .env.example). A 401 from ElevenLabs usually means the key was missing or wrong."
+            ),
+        )
+    return _elevenlabs_client, _ELEVENLABS_AGENT_ID
 
 
 @app.get("/get_conversation")
-def get_conversation():
-    signed = elevenlabs.conversational_ai.conversations.get_signed_url(agent_id=AGENT_ID)
-    return JSONResponse(content={
-        "signed_url": signed.signed_url,
-        "agent_id": AGENT_ID,
-    })
+def get_conversation_signed_url():
+    """Signed WebSocket URL for private ConvAI agents (frontend uses this when VITE_ELEVENLABS_USE_SIGNED_URL=true)."""
+    client, agent_id = _require_elevenlabs()
+    signed = client.conversational_ai.conversations.get_signed_url(agent_id=agent_id)
+    return JSONResponse(
+        content={
+            "signed_url": signed.signed_url,
+            "agent_id": agent_id,
+        }
+    )
 
 
 @app.get("/conversation/{conversation_id}")
 def fetch_conversation(conversation_id: str):
-    full = elevenlabs.conversational_ai.conversations.get(conversation_id=conversation_id)
+    client, _ = _require_elevenlabs()
+    full = client.conversational_ai.conversations.get(conversation_id=conversation_id)
     return JSONResponse(content=full.model_dump())
 
 
@@ -420,43 +454,43 @@ def get_preferences(body: dict):
 
 @app.post("/getCourses")
 def get_courses(body: dict = Body(default_factory=dict)):
-    """Match `preferences` (from /get_preferences) to Jupiterp + PlanetTerp enrichment."""
-    # prefs = body.get("preferences")
-    prefs = {
-    "student": {
-        "program": "MSCS",
-        "year": 1
-    },
-    "interests": [
-        "natural language processing",
-        "data visualization",
-        "improving interactivity in static charts"
-    ],
-    "interest_keywords": [
-        "nlp",
-        "natural language processing",
-        "data visualization",
-        "visualization",
-        "charts",
-        "interactivity"
-    ],
-    "constraints": {
-        "department": "CMSC"
-    },
-    "social": {
-        "wants_study_partners": False
-    },
-    "schedule_constraints": {
-        "free_days": [
-        "Friday"
-        ]
-    }
-    }
-    response = fetch_jupiterp_courses_with_planetterp(
+    """
+    Returns `courses`: Jupiterp + PlanetTerp payload from `fetch_jupiterp_courses_with_planetterp`.
+
+    (Previously also returned `terpai_scheduling` from `terpai_client.compute_terpai_scheduling_summary` — re-enable import + merge into response if needed.)
+    """
+    prefs = body.get("preferences") if isinstance(body, dict) else None
+    # if prefs is None:
+        # prefs = {
+        #     "student": {"program": "MSCS", "year": 1},
+        #     "interests": [
+        #         "natural language processing",
+        #         "data visualization",
+        #         "improving interactivity in static charts",
+        #     ],
+        #     "interest_keywords": [
+        #         "nlp",
+        #         "natural language processing",
+        #         "data visualization",
+        #         "visualization",
+        #         "charts",
+        #         "interactivity",
+        #     ],
+        #     "constraints": {"department": "CMSC"},
+        #     "social": {"wants_study_partners": False},
+        #     "schedule_constraints": {"free_days": ["Friday"]},
+        # }
+    courses = fetch_jupiterp_courses_with_planetterp(
         prefs if isinstance(prefs, (dict, list)) else None
     )
-    print(response)
-    return response
+    # terpai_scheduling = compute_terpai_scheduling_summary(
+    #     courses,
+    #     preferences=prefs if isinstance(prefs, dict) else None,
+    # )
+    # out = {"courses": courses, "terpai_scheduling": terpai_scheduling}
+    out = {"courses": courses}
+    # print(out)
+    return out
 
 
 @app.post("/getPeople")
@@ -470,3 +504,39 @@ def get_people(body: dict = Body(default_factory=dict)):
     )
     return {"ok": True}
 
+
+@app.get("/universityAnalytics")
+def university_analytics():
+    """Placeholder analytics endpoint. Returns mock data matching the dashboard template.
+    Replace with real aggregations from stored preference data once collection is live."""
+    return {
+        "kpi": {
+            "active_users": 2847,
+            "courses_planned": 8241,
+            "circle_matches": 1456,
+            "avg_satisfaction": 4.3,
+        },
+        "goal_distribution": {
+            "fall26": [
+                {"label": "Coast & GPA", "pct": 32},
+                {"label": "Skill Build", "pct": 28},
+                {"label": "Research", "pct": 18},
+                {"label": "Balanced", "pct": 12},
+                {"label": "Explore", "pct": 10},
+            ],
+        },
+        "demand": [
+            {"course": "CMSC 828A", "demand_pct": 92, "capacity": 35, "waitlist": 23},
+            {"course": "CMSC 421", "demand_pct": 88, "capacity": 40, "waitlist": 15},
+            {"course": "CMSC 723", "demand_pct": 78, "capacity": 30, "waitlist": 8},
+            {"course": "CMSC 330", "demand_pct": 70, "capacity": 50, "waitlist": 5},
+            {"course": "DATA 601", "demand_pct": 60, "capacity": 45, "waitlist": 2},
+            {"course": "DATA 606", "demand_pct": 55, "capacity": 40, "waitlist": 0},
+        ],
+        "migration": [
+            {"from": "CS", "to": "Data Science", "count": 47, "pct": "14%", "trend": "up"},
+            {"from": "INFO", "to": "CS", "count": 23, "pct": "8%", "trend": "up"},
+            {"from": "Math", "to": "Data Science", "count": 18, "pct": "6%", "trend": "stable"},
+            {"from": "CS", "to": "Undeclared", "count": 12, "pct": "3%", "trend": "down"},
+        ],
+    }
