@@ -1,6 +1,14 @@
 .env
 .venv
 
+# JavaScript — never commit dependencies or build output
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.npm
+*.tsbuildinfo
+
 # TerpAI CLI secrets (backend_example)
 backend_example/.terpai_bearer
 backend_example/.env.terpai
