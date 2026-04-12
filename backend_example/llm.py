@@ -1,67 +1,50 @@
-import base64, json, requests,os
-from dotenv import load_dotenv
+"""
+Minimal Ollama chat example (requires Ollama running locally).
+
+Why it might not run:
+  1. Ollama is not installed / not running (default URL http://localhost:11434).
+  2. The model name is not pulled: `ollama pull llama3.2` (or set OLLAMA_MODEL).
+  3. Cloud-only models (e.g. kimi-k2.5:cloud) need Ollama 0.6+ and cloud login.
+
+The FastAPI app in /backend uses HTTP to Ollama (see terp_llm.py) so you do not need
+the `ollama` Python package for TerpAI — only the Ollama desktop/daemon.
+"""
+
+import os
+import sys
+
+try:
+    from ollama import Client
+except ImportError:
+    print("Install with: pip install ollama", file=sys.stderr)
+    raise
+
+client = Client(host=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+
+MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 
 
-load_dotenv()
-
-BEARER = os.getenv("Bearer_token")
-CONVERSATION_ID = os.getenv("Conversation_id")
-URL = f"https://terpai.umd.edu/api/internal/userConversations/{CONVERSATION_ID}/segments"
-
-HEADERS = {
-    "Authorization": f"Bearer {BEARER}",
-    "Content-Type": "application/json",
-    "Accept": "text/event-stream",
-}
-
-def ask(question: str, parent_segment_id: str) -> str:
-    """Send a question, print the streamed reply, return the new segment ID to use as next parent."""
-    payload = {
-        "question": question,
-        "visionImageIds": [],
-        "attachmentIds": [],
-        "segmentTraceLogLevel": "NonPersisted",
-        "lineage": {"parentSegmentId": parent_segment_id, "lineageType": "Question"},
-    }
-
-    new_parent = None
-    with requests.post(URL, headers=HEADERS, json=payload, stream=True) as resp:
-        resp.raise_for_status()
-        for raw in resp.iter_lines(decode_unicode=True):
-            if not raw or not raw.startswith("data:"):
-                continue
-            data = raw[5:].strip()
-            if not data:
-                continue
-            try:
-                decoded = base64.b64decode(data, validate=True).decode("utf-8")
-            except Exception:
-                decoded = data
-            try:
-                obj = json.loads(decoded)
-                # First chunk: metadata. Grab the segment ID for the assistant's reply.
-                # Field name is likely 'id' or 'segmentId' — confirm on first run and adjust.
-                # new_parent = obj.get("id") or obj.get("segmentId") or new_parent
-                print(f"\n[meta] {obj}\n", flush=True)
-            except json.JSONDecodeError:
-                print(decoded, end="", flush=True)
-                continue
-
-            if isinstance(obj, dict):
-                seg_id = obj.get("ConversationSegmentId") or obj.get("id") or obj.get("segmentId")
-                if seg_id:
-                    new_parent = seg_id
-
-                continue
-
-                # print(f"\n[meta] {obj}\n", flush=True)
-
-            # else:
-            print(obj, end="", flush=True)
-        print()
-    return new_parent
+def chat(messages):
+    response = client.chat(model=MODEL, messages=messages)
+    return response["message"]["content"]
 
 
-# Seed with the parent you captured from DevTools for this conversation
-parent = "8888d674-51d3-4612-8008-7e0fd60a61d2"
-parent = ask("Are you TerpAI? Answer in Yes/No?", parent)
+def stream_chat(messages):
+    for chunk in client.chat(model=MODEL, messages=messages, stream=True):
+        print(chunk["message"]["content"], end="", flush=True)
+    print()
+
+
+if __name__ == "__main__":
+    try:
+        reply = chat(
+            [
+                {"role": "system", "content": "You are a concise assistant."},
+                {"role": "user", "content": "Explain GRPO in two sentences."},
+            ]
+        )
+        print("Reply:", reply)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Tip: run `ollama serve` then `ollama pull {MODEL}`".replace("{MODEL}", MODEL), file=sys.stderr)
+        sys.exit(1)

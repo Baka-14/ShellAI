@@ -1,7 +1,9 @@
 /**
- * POST after "What's next?" — backend routes are placeholders until wired to real logic.
+ * POST after "What's next?"
  *
- * Payload should include `preferences`: the same object returned from POST /get_preferences.
+ * Body should include `preferences` (same object as POST /get_preferences).
+ *
+ * POST /getCourses returns `{ courses }` (Jupiterp + PlanetTerp). `terpai_scheduling` is disabled on the backend for now.
  */
 
 function apiBase() {

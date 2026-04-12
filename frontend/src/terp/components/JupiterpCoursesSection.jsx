@@ -1,4 +1,6 @@
 import { C, rgba } from "../../shared/theme.js";
+import { ILLUSTRATIVE_UNDECIDED_PEERS } from "../data/undecidedMajorPeers.js";
+import { getMajorSelectionPeersBucket } from "../data/majorSelectionPeers.js";
 
 /** @param {Record<string, unknown>} s */
 function formatMeetingLine(s) {
@@ -239,15 +241,41 @@ function SeatsBar({ open, total }) {
 }
 
 /**
- * @param {{ payload: Record<string, unknown> | null }} props
+ * @param {{
+ *   coursesPayload: Record<string, unknown> | null | undefined;
+ *   terpaiScheduling: Record<string, unknown> | null | undefined;
+ *   showUndecidedMajorPeers?: boolean;
+ *   majorSelectionPeersBucket?: string | null;
+ * }} props
+ *
+ * `coursesPayload` = Jupiterp + PlanetTerp only.
+ * `terpaiScheduling` = `{ summary?, error?, skipped? }` from TerpAI (separate API object).
  */
-export default function JupiterpCoursesSection({ payload }) {
-  if (!payload || payload.ok === false) return null;
-  const details = Array.isArray(payload.course_details) ? payload.course_details : [];
-  if (details.length === 0) return null;
+export default function JupiterpCoursesSection({
+  coursesPayload = null,
+  terpaiScheduling = null,
+  showUndecidedMajorPeers = false,
+  majorSelectionPeersBucket = null,
+}) {
+  const majorPeers =
+    !showUndecidedMajorPeers && majorSelectionPeersBucket ? getMajorSelectionPeersBucket(majorSelectionPeersBucket) : null;
+  const schedulingSummary =
+    typeof terpaiScheduling?.summary === "string" ? terpaiScheduling.summary.trim() : "";
+  const schedulingError =
+    typeof terpaiScheduling?.error === "string" ? terpaiScheduling.error.trim() : "";
+  const schedulingSkipped =
+    typeof terpaiScheduling?.skipped === "string" ? terpaiScheduling.skipped.trim() : "";
+  const hasTerpaiBlock = Boolean(schedulingSummary || schedulingError || schedulingSkipped);
 
-  const level = payload.student_level_inferred;
-  const policy = typeof payload.course_level_policy === "string" ? payload.course_level_policy : "";
+  const showCourses = coursesPayload != null && coursesPayload.ok !== false;
+  const details = showCourses && Array.isArray(coursesPayload.course_details) ? coursesPayload.course_details : [];
+
+  if (!showCourses && !hasTerpaiBlock) return null;
+  if (showCourses && details.length === 0 && !hasTerpaiBlock) return null;
+
+  const level = coursesPayload?.student_level_inferred;
+  const policy = typeof coursesPayload?.course_level_policy === "string" ? coursesPayload.course_level_policy : "";
+  const showMainHeader = showCourses;
 
   return (
     <div style={{ marginBottom: 28, animation: "fadeUp 0.35s ease both" }}>
@@ -259,28 +287,67 @@ export default function JupiterpCoursesSection({ payload }) {
         .jp-sum::-webkit-details-marker { display: none; }
       `}</style>
 
-      <div
-        style={{
-          marginBottom: 20,
-          padding: "16px 18px",
-          borderRadius: 12,
-          background: `linear-gradient(135deg, ${rgba(C.red, 0.06)}, ${rgba(C.accent2, 0.05)})`,
-          border: `1px solid ${C.border}`,
-        }}
-      >
-        <h3 style={{ fontFamily: "'Instrument Serif',serif", fontSize: 22, fontWeight: 400, color: C.ink, margin: "0 0 8px" }}>
-          Courses matched for you
-        </h3>
-        <p style={{ fontSize: 13, color: C.muted, margin: 0, lineHeight: 1.55 }}>
-          {level && level !== "unknown" && (
-            <>
-              <span style={{ fontWeight: 600, color: C.ink }}>{level === "graduate" ? "Graduate" : "Undergraduate"}</span>
-              {" · "}
-            </>
+      {showMainHeader && (
+        <div
+          style={{
+            marginBottom: 20,
+            padding: "16px 18px",
+            borderRadius: 12,
+            background: `linear-gradient(135deg, ${rgba(C.red, 0.06)}, ${rgba(C.accent2, 0.05)})`,
+            border: `1px solid ${C.border}`,
+          }}
+        >
+          <h3 style={{ fontFamily: "'Instrument Serif',serif", fontSize: 22, fontWeight: 400, color: C.ink, margin: "0 0 8px" }}>
+            Courses matched for you
+          </h3>
+          <p style={{ fontSize: 13, color: C.muted, margin: 0, lineHeight: 1.55 }}>
+            {level && level !== "unknown" && (
+              <>
+                <span style={{ fontWeight: 600, color: C.ink }}>{level === "graduate" ? "Graduate" : "Undergraduate"}</span>
+                {" · "}
+              </>
+            )}
+            {policy}
+          </p>
+        </div>
+      )}
+
+      {hasTerpaiBlock && (
+        <div
+          style={{
+            marginBottom: 20,
+            padding: "14px 18px",
+            borderRadius: 12,
+            background: C.card,
+            border: `1px solid ${C.border}`,
+            boxShadow: "0 1px 8px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: C.muted,
+              marginBottom: 8,
+            }}
+          >
+            Scheduling insight · TerpAI
+          </div>
+          {schedulingSummary && (
+            <p style={{ fontSize: 14, color: C.ink, margin: 0, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{schedulingSummary}</p>
           )}
-          {policy}
-        </p>
-      </div>
+          {schedulingError && (
+            <p style={{ fontSize: 13, color: C.red, margin: schedulingSummary ? "10px 0 0" : 0, lineHeight: 1.45 }}>
+              {schedulingError}
+            </p>
+          )}
+          {!schedulingSummary && !schedulingError && schedulingSkipped && (
+            <p style={{ fontSize: 12, color: C.muted, margin: 0, lineHeight: 1.5 }}>{schedulingSkipped}</p>
+          )}
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {details.map((d, cardIdx) => {
@@ -359,6 +426,86 @@ export default function JupiterpCoursesSection({ payload }) {
                 {open != null && total != null && <SeatsBar open={open} total={total} />}
 
                 <GradeDistribution planetterp={d.planetterp} />
+
+                {showUndecidedMajorPeers && (
+                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.08em",
+                        color: C.muted,
+                        marginBottom: 8,
+                      }}
+                    >
+                      Classmates to connect with
+                    </div>
+                    <p style={{ fontSize: 11, color: rgba(C.muted, 0.95), margin: "0 0 10px", lineHeight: 1.45 }}>
+                      Illustrative peers (your major is still open-ended). Each took this course recently — reach out on Terpmail.
+                    </p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {ILLUSTRATIVE_UNDECIDED_PEERS.map((peer) => (
+                        <div
+                          key={peer.terpMail}
+                          style={{
+                            padding: "10px 12px",
+                            background: C.subtle,
+                            borderRadius: 8,
+                            borderLeft: `3px solid ${C.accent2}`,
+                          }}
+                        >
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{peer.name}</div>
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{peer.terpMail}</div>
+                          <div style={{ fontSize: 12, color: "#444", marginTop: 6, lineHeight: 1.5 }}>
+                            Took <strong>{d.course_code}</strong> — happy to compare notes on workload and whether it helped them pick a direction.
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {majorPeers && (
+                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.08em",
+                        color: C.muted,
+                        marginBottom: 8,
+                      }}
+                    >
+                      Peers in {majorPeers.label}
+                    </div>
+                    <p style={{ fontSize: 11, color: rgba(C.muted, 0.95), margin: "0 0 10px", lineHeight: 1.45 }}>
+                      Illustrative students already in this path (from your goals around major or selection). Fictional Terpmail
+                      contacts — each took this course and can speak to fit for the major.
+                    </p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {majorPeers.peers.map((peer) => (
+                        <div
+                          key={peer.terpMail}
+                          style={{
+                            padding: "10px 12px",
+                            background: C.subtle,
+                            borderRadius: 8,
+                            borderLeft: `3px solid ${C.red}`,
+                          }}
+                        >
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{peer.name}</div>
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{peer.terpMail}</div>
+                          <div style={{ fontSize: 12, color: "#444", marginTop: 6, lineHeight: 1.5 }}>
+                            Took <strong>{d.course_code}</strong> — ask how it mapped to requirements and whether they’d take it again on
+                            this track.
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {tags.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 14, alignItems: "center" }}>

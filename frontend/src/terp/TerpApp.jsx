@@ -20,10 +20,18 @@ import Hub from "./components/Hub.jsx";
 import ConvaiSession from "./components/ConvaiSession.jsx";
 import CourseWeekCalendar from "./components/CourseWeekCalendar.jsx";
 import GpaSimulator from "./components/GpaSimulator.jsx";
+import ResearchDomainPeopleCard from "./components/ResearchDomainPeopleCard.jsx";
 import WorkloadStrip from "./components/WorkloadStrip.jsx";
 import PersonaMatchBanner from "./components/PersonaMatchBanner.jsx";
 import MajorPathwayDiagram from "./components/MajorPathwayDiagram.jsx";
 import { inferPersonaFromAdvisor } from "./utils/inferPersona.js";
+import { shouldShowGpaCalculator } from "./utils/preferencesGpaGoal.js";
+import { shouldShowResearchPeople, resolveResearchPeopleBucket } from "./utils/preferencesResearchPeople.js";
+import { preferencesIndicateUndecidedMajor } from "./utils/preferencesUndecidedMajor.js";
+import {
+  preferencesIndicateMajorSelectionPeers,
+  resolveMajorSelectionPeerBucket,
+} from "./utils/preferencesMajorSelectionPeers.js";
 import PersonaLoadingGate from "./components/PersonaLoadingGate.jsx";
 import PreferencesReview from "./components/PreferencesReview.jsx";
 import JupiterpCoursesSection from "./components/JupiterpCoursesSection.jsx";
@@ -46,6 +54,8 @@ export default function TerpApp() {
   /** After ConvAI + preferences LLM: resume payload for Find courses / Find people. */
   const [preferencesGate, setPreferencesGate] = useState(null);
   const [jupiterpCoursesPayload, setJupiterpCoursesPayload] = useState(null);
+  /** Separate from courses payload: `{ summary, error, skipped }` from POST /getCourses */
+  const [terpaiScheduling, setTerpaiScheduling] = useState(null);
   const [jupiterpCoursesError, setJupiterpCoursesError] = useState(null);
   const [jupiterpCoursesLoading, setJupiterpCoursesLoading] = useState(false);
 
@@ -97,6 +107,7 @@ export default function TerpApp() {
     setPersonaPending(null);
     setPreferencesGate(null);
     setJupiterpCoursesPayload(null);
+    setTerpaiScheduling(null);
     setJupiterpCoursesError(null);
     setJupiterpCoursesLoading(false);
   };
@@ -122,10 +133,12 @@ export default function TerpApp() {
         setJupiterpCoursesLoading(true);
         try {
           const data = await postGetCourses(pending.getCoursesPayload);
-          setJupiterpCoursesPayload(data);
+          setJupiterpCoursesPayload(data?.courses ?? null);
+          setTerpaiScheduling(data?.terpai_scheduling ?? null);
           setJupiterpCoursesError(null);
         } catch (e) {
           setJupiterpCoursesPayload(null);
+          setTerpaiScheduling(null);
           setJupiterpCoursesError(e instanceof Error ? e.message : String(e));
         } finally {
           setJupiterpCoursesLoading(false);
@@ -182,19 +195,23 @@ export default function TerpApp() {
         setJupiterpCoursesLoading(true);
         try {
           const data = await postGetCourses(followUpPayload);
-          setJupiterpCoursesPayload(data);
+          setJupiterpCoursesPayload(data?.courses ?? null);
+          setTerpaiScheduling(data?.terpai_scheduling ?? null);
           setJupiterpCoursesError(null);
         } catch (e) {
           setJupiterpCoursesPayload(null);
+          setTerpaiScheduling(null);
           setJupiterpCoursesError(e instanceof Error ? e.message : String(e));
         } finally {
           setJupiterpCoursesLoading(false);
         }
       } else if (target === "courses" && USE_LLM_PERSONA) {
         setJupiterpCoursesPayload(null);
+        setTerpaiScheduling(null);
         setJupiterpCoursesError(null);
       } else {
         setJupiterpCoursesPayload(null);
+        setTerpaiScheduling(null);
         setJupiterpCoursesError(null);
         void postGetPeople(followUpPayload).catch((e) => console.warn("[getPeople]", e));
       }
@@ -385,6 +402,7 @@ export default function TerpApp() {
     setPersonaPending(null);
     setPreferencesGate(null);
     setJupiterpCoursesPayload(null);
+    setTerpaiScheduling(null);
     setJupiterpCoursesError(null);
     setJupiterpCoursesLoading(false);
     setCircleReady(false);
@@ -410,6 +428,54 @@ export default function TerpApp() {
     }
     return m;
   }, [llmPersonaResult]);
+
+  /** Advisor JSON from the session behind "What's next?" (for GPA detection before hub). */
+  const resumeAdvisorForGpa = useMemo(() => {
+    const r = preferencesGate?.resume;
+    if (!r || typeof r !== "object") return null;
+    if (r.variant === "advisor" && r.ap) return r.ap;
+    if (r.variant === "demo" && r.advisor) return r.advisor;
+    return null;
+  }, [preferencesGate]);
+
+  const showGpaCalculator = useMemo(
+    () => shouldShowGpaCalculator(preferencesGate?.preferences ?? null, advisorProfile ?? resumeAdvisorForGpa),
+    [preferencesGate, advisorProfile, resumeAdvisorForGpa],
+  );
+
+  const gpaBaselineStr = useMemo(
+    () =>
+      String(
+        advisorProfile?.profile?.gpa ??
+          profile?.gpa ??
+          preferencesGate?.resume?.profileObj?.gpa ??
+          resumeAdvisorForGpa?.profile?.gpa ??
+          "",
+      ),
+    [advisorProfile, profile, preferencesGate, resumeAdvisorForGpa],
+  );
+
+  const showResearchPeople = useMemo(
+    () => shouldShowResearchPeople(preferencesGate?.preferences ?? null, advisorProfile ?? resumeAdvisorForGpa),
+    [preferencesGate, advisorProfile, resumeAdvisorForGpa],
+  );
+
+  const researchPeopleBucket = useMemo(
+    () => resolveResearchPeopleBucket(preferencesGate?.preferences ?? null),
+    [preferencesGate?.preferences],
+  );
+
+  const showUndecidedMajorPeers = useMemo(
+    () => preferencesIndicateUndecidedMajor(preferencesGate?.preferences ?? null, advisorProfile ?? resumeAdvisorForGpa),
+    [preferencesGate, advisorProfile, resumeAdvisorForGpa],
+  );
+
+  const majorSelectionPeersBucket = useMemo(() => {
+    const prefs = preferencesGate?.preferences ?? null;
+    const ap = advisorProfile ?? resumeAdvisorForGpa;
+    if (!preferencesIndicateMajorSelectionPeers(prefs, ap)) return null;
+    return resolveMajorSelectionPeerBucket(prefs, ap);
+  }, [preferencesGate, advisorProfile, resumeAdvisorForGpa]);
 
   const headerBack = (label, action) => (
     <button
@@ -546,6 +612,7 @@ export default function TerpApp() {
           onCourses={() => {
             setPreferencesGate(null);
             setJupiterpCoursesPayload(null);
+            setTerpaiScheduling(null);
             setJupiterpCoursesError(null);
             setPhase("courses");
           }}
@@ -553,44 +620,73 @@ export default function TerpApp() {
         />
       )}
 
-      {phase === "courses" && (
-        <div style={{ maxWidth: 640, margin: "0 auto", padding: "20px 18px 50px" }}>
-          <div style={{ marginBottom: 16, animation: "fadeUp 0.3s ease both" }}>
-            <h2 style={{ fontFamily: "'Instrument Serif',serif", fontSize: 24, fontWeight: 400, color: C.ink, margin: "0 0 4px" }}>Recommended Courses</h2>
-            <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>
-              {GOALS.find((g) => g.id === ans.goal)?.label ?? ans.goal} · {ans.program}
-            </p>
-          </div>
-          {jupiterpCoursesLoading && (
-            <p style={{ fontSize: 13, color: C.muted, margin: "0 0 14px" }}>Updating course recommendations…</p>
-          )}
-          {jupiterpCoursesError && (
-            <p style={{ fontSize: 13, color: C.red, margin: "0 0 14px", lineHeight: 1.45 }}>{jupiterpCoursesError}</p>
-          )}
-          <JupiterpCoursesSection payload={jupiterpCoursesPayload} />
-          <PersonaMatchBanner personaId={persona} llmRationale={llmPersonaResult?.rationale} />
-          {persona === "explorer" && <MajorPathwayDiagram />}
-          {persona === "closer" && (
-            <GpaSimulator baselineGpaStr={String(advisorProfile?.profile?.gpa ?? ans.gpa ?? "")} courses={MOCK_COURSES} />
-          )}
-          {!jupiterpCoursesPayload?.course_details?.length && !jupiterpCoursesLoading && (
-            <>
-              <CourseWeekCalendar courses={MOCK_COURSES} />
-              <WorkloadStrip courses={MOCK_COURSES} />
-              {persona === "researcher" && (
-                <p style={{ fontSize: 12, color: C.muted, margin: "0 0 14px", lineHeight: 1.55 }}>
-                  For research-first planning we lead with lab fit, venues, and co-authorship — expand courses for Scholar links and RA estimates.
+      {phase === "courses" && (() => {
+        const jp = jupiterpCoursesPayload;
+        const ts = terpaiScheduling;
+        const hasCourseRows = Array.isArray(jp?.course_details) && jp.course_details.length > 0;
+        const hasTerpai =
+          (typeof ts?.summary === "string" && ts.summary.trim()) ||
+          (typeof ts?.error === "string" && ts.error.trim()) ||
+          (typeof ts?.skipped === "string" && ts.skipped.trim());
+        const showEmptyHint =
+          !jupiterpCoursesLoading &&
+          !jupiterpCoursesError &&
+          jp &&
+          jp.ok !== false &&
+          !hasCourseRows &&
+          !hasTerpai;
+        const prefs = preferencesGate?.preferences;
+        const emptyButPrefs =
+          showEmptyHint && prefs && typeof prefs === "object" && Object.keys(prefs).length > 0;
+        return (
+          <div style={{ maxWidth: 640, margin: "0 auto", padding: "20px 18px 50px" }}>
+            <div style={{ marginBottom: 18, animation: "fadeUp 0.3s ease both" }}>
+              <h2 style={{ fontFamily: "'Instrument Serif',serif", fontSize: 24, fontWeight: 400, color: C.ink, margin: "0 0 4px" }}>Your courses</h2>
+              <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>Recommendations from your chat preferences</p>
+            </div>
+            {jupiterpCoursesLoading && (
+              <p style={{ fontSize: 13, color: C.muted, margin: "0 0 14px" }}>Loading course recommendations…</p>
+            )}
+            {jupiterpCoursesError && (
+              <p style={{ fontSize: 13, color: C.red, margin: "0 0 14px", lineHeight: 1.45 }}>{jupiterpCoursesError}</p>
+            )}
+            {showGpaCalculator && (
+              <div
+                style={{
+                  marginBottom: 22,
+                  padding: "16px 16px 18px",
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  background: "#fff",
+                  animation: "fadeUp 0.35s ease both",
+                }}
+              >
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: C.muted, margin: "0 0 12px" }}>
+                  GPA calculator
                 </p>
-              )}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {MOCK_COURSES.map((r, i) => (
-                  <CourseCard key={r.course} r={r} i={i} persona={persona} aiHighlight={courseAiMap[r.course]} />
-                ))}
+                <GpaSimulator baselineGpaStr={gpaBaselineStr} courses={MOCK_COURSES} />
               </div>
-            </>
-          )}
-        </div>
-      )}
+            )}
+            {showResearchPeople && <ResearchDomainPeopleCard bucket={researchPeopleBucket} />}
+            <JupiterpCoursesSection
+              coursesPayload={jupiterpCoursesPayload}
+              terpaiScheduling={terpaiScheduling}
+              showUndecidedMajorPeers={showUndecidedMajorPeers}
+              majorSelectionPeersBucket={majorSelectionPeersBucket}
+            />
+            {showEmptyHint && (
+              <p style={{ fontSize: 13, color: C.muted, margin: "12px 0 0", lineHeight: 1.55 }}>
+                {emptyButPrefs
+                  ? "No course sections matched yet. That can happen if the chat ended early: Jupiterp needs enough signal (e.g. department like CMSC, interests, or course codes) to infer classes. Your saved preferences are still fine — try a longer chat or tap New chat and mention courses or CMSC."
+                  : "No course matches returned. Adjust preferences or try again later."}
+              </p>
+            )}
+            {!jupiterpCoursesLoading && jp && jp.ok === false && jp.error && (
+              <p style={{ fontSize: 13, color: C.red, margin: "12px 0 0", lineHeight: 1.45 }}>{String(jp.error)}</p>
+            )}
+          </div>
+        );
+      })()}
 
       {phase === "circle" && (
         <div style={{ maxWidth: 600, margin: "0 auto", padding: "20px 18px 50px" }}>

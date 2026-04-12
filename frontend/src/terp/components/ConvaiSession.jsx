@@ -221,11 +221,11 @@ export default function ConvaiSession({ onComplete, onError }) {
       <div style={{ display: "flex", justifyContent: "center", padding: "18px 0 12px" }}>
         <Blob state={blobSt} size={140} />
       </div>
-      <p style={{ textAlign: "center", fontSize: 16, fontWeight: 500, color: C.ink, margin: "0 0 8px", lineHeight: 1.45 }}>
-        Talk with Terp
+      <p style={{ textAlign: "center", fontSize: 20, fontWeight: 500, color: C.ink, margin: "0 0 6px", lineHeight: 1.35, fontFamily: "'Instrument Serif',serif" }}>
+        Terp
       </p>
-      <p style={{ textAlign: "center", fontSize: 12, color: C.muted, margin: "0 auto 20px", maxWidth: 420, lineHeight: 1.55 }}>
-        Voice is handled by ElevenLabs (not the browser speech API). Allow the microphone when asked. When the agent sends the full intake JSON, the session ends automatically (or tap End anytime).
+      <p style={{ textAlign: "center", fontSize: 13, color: C.muted, margin: "0 auto 22px", maxWidth: 420, lineHeight: 1.5 }}>
+        Talk to Shell, your AI advisor
       </p>
 
       {status === "wrapping" && (
@@ -267,7 +267,7 @@ export default function ConvaiSession({ onComplete, onError }) {
             color: C.ink,
           }}
         >
-          End conversation
+          Check your courses
         </button>
       </div>
 
