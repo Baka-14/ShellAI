@@ -1,31 +1,85 @@
 """
 UMD TerpAI (Nebula) internal segments API — same flow as terpai_test.py.
 
-`compute_terpai_scheduling_summary` returns a standalone dict (not merged into Jupiterp):
-  { "summary": str | None, "error": str | None, "skipped": str | None }
+`compute_terpai_scheduling_summary` returns a :class:`TerpaiSchedulingResult` (not merged into Jupiterp).
+When wired in FastAPI, POST /getCourses can expose it as ``terpai_scheduling`` next to ``courses``.
 
-POST /getCourses exposes it as `terpai_scheduling` next to `courses`.
+**Environment** (optional; if missing, ``skipped`` is set on the result):
 
-Env (optional; if missing, `skipped` is set):
-  TERPAI_BEARER
-  TERPAI_CONVERSATION_ID
-  TERPAI_PARENT_SEGMENT_ID
+- ``TERPAI_BEARER`` — JWT without the ``Bearer `` prefix
+- ``TERPAI_CONVERSATION_ID`` — conversation UUID in the URL path
+- ``TERPAI_PARENT_SEGMENT_ID`` — parent segment for Question lineage
+- ``TERPAI_BASE_URL`` — optional override (default ``https://terpai.umd.edu``)
+
+**Input shape** for ``compute_terpai_scheduling_summary(jupiterp_response, preferences=None)``:
+
+- ``jupiterp_response["ok"]`` must be truthy or the call is skipped.
+- ``jupiterp_response["course_details"]`` should be a list of course dicts (see ``MINIMAL_JUPITERP_FIXTURE``).
+
+**CLI** (from ``backend/``): ``python terpai_client.py check|dry-run|live``
 
 Bearer tokens expire; rotate manually until the platform exposes a server-side token flow.
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import os
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, TypedDict
 
 import requests
 
 _DEFAULT_BASE = "https://terpai.umd.edu"
 _SEGMENTS_PATH = "/api/internal/userConversations/{conversation_id}/segments"
+
+
+class TerpaiSchedulingResult(TypedDict):
+    """Return type of :func:`compute_terpai_scheduling_summary`."""
+
+    summary: str | None
+    error: str | None
+    skipped: str | None
+
+
+MINIMAL_JUPITERP_FIXTURE: dict[str, Any] = {
+    "ok": True,
+    "student_level_inferred": "sophomore",
+    "course_level_policy": None,
+    "matched_codes": ["CMSC216"],
+    "course_details": [
+        {
+            "course_code": "CMSC216",
+            "name": "Introduction to Computer Systems",
+            "min_credits": 3,
+            "sections": [
+                {
+                    "section_code": "0101",
+                    "open_seats": 12,
+                    "total_seats": 80,
+                    "meetings": [
+                        {"days": "MWF", "start_time": "10:00", "end_time": "10:50", "building": "IRB", "room": "1101"}
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+def _bootstrap_env() -> None:
+    """Load ``.env`` / ``.env.terpai`` from ``backend/`` when python-dotenv is installed."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    here = Path(__file__).resolve().parent
+    load_dotenv(here / ".env")
+    load_dotenv(here / ".env.terpai")
+    load_dotenv()
 
 
 def _segments_url() -> str | None:
@@ -197,14 +251,14 @@ def compute_terpai_scheduling_summary(
     jupiterp_response: dict[str, Any],
     *,
     preferences: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> TerpaiSchedulingResult:
     """
     Standalone TerpAI scheduling result (return next to `courses` in POST /getCourses).
 
     Returns:
-        { "summary": str | None, "error": str | None, "skipped": str | None }
+        :class:`TerpaiSchedulingResult` with string values or ``None`` per field.
     """
-    out: dict[str, Any] = {"summary": None, "error": None, "skipped": None}
+    out: TerpaiSchedulingResult = {"summary": None, "error": None, "skipped": None}
     if not terpai_configured():
         out["skipped"] = "set TERPAI_BEARER, TERPAI_CONVERSATION_ID, TERPAI_PARENT_SEGMENT_ID"
         return out
@@ -226,3 +280,72 @@ def compute_terpai_scheduling_summary(
         out["error"] = str(e)
 
     return out
+
+
+def _cmd_check() -> int:
+    _bootstrap_env()
+    checks = {
+        "TERPAI_BEARER": bool((os.getenv("TERPAI_BEARER") or "").strip()),
+        "TERPAI_CONVERSATION_ID": bool((os.getenv("TERPAI_CONVERSATION_ID") or "").strip()),
+        "TERPAI_PARENT_SEGMENT_ID": bool((os.getenv("TERPAI_PARENT_SEGMENT_ID") or "").strip()),
+    }
+    payload = {
+        "terpai_configured": terpai_configured(),
+        "segments_url_set": _segments_url() is not None,
+        "headers_set": _headers() is not None,
+        "env_flags": checks,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0 if payload["terpai_configured"] else 1
+
+
+def _cmd_dry_run() -> int:
+    _bootstrap_env()
+    slim = _slim_courses_for_prompt(MINIMAL_JUPITERP_FIXTURE)
+    question = build_scheduling_question(slim)
+    print(
+        json.dumps(
+            {
+                "slim": slim,
+                "question_length_chars": len(question),
+                "question_preview": question[:800] + ("…" if len(question) > 800 else ""),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _cmd_live() -> int:
+    _bootstrap_env()
+    result = compute_terpai_scheduling_summary(MINIMAL_JUPITERP_FIXTURE)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("summary"):
+        return 0
+    if result.get("skipped"):
+        return 2
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="terpai_client",
+        description="TerpAI scheduling client: env check, dry-run prompt, or live call.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("check", help="Print whether TerpAI env is complete (no HTTP).")
+    sub.add_parser("dry-run", help="Build slim JSON + question from MINIMAL_JUPITERP_FIXTURE (no HTTP).")
+    sub.add_parser("live", help="Call TerpAI with the fixture (needs valid TERPAI_* env).")
+    args = parser.parse_args(argv)
+    if args.command == "check":
+        return _cmd_check()
+    if args.command == "dry-run":
+        return _cmd_dry_run()
+    if args.command == "live":
+        return _cmd_live()
+    raise AssertionError("unreachable")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
