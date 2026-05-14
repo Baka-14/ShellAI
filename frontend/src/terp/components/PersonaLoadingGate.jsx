@@ -14,6 +14,9 @@ const STEPS = [
 /**
  * Full-screen gate after ConvAI: LLM infers persona + optional course highlights.
  * On failure, calls onResult(null) so the app falls back to heuristic persona.
+ *
+ * Not the same as /get_preferences (structured course-matching fields); runs only when
+ * TerpApp enables USE_LLM_PERSONA and enters the personaLoading phase.
  */
 export default function PersonaLoadingGate({ messages, advisorProfile, onResult }) {
   const [step, setStep] = useState(0);

@@ -4,7 +4,13 @@ import { C } from "../../shared/theme.js";
  * After ConvAI (preferences are still computed server-side for later use).
  * Simple choice: courses vs circle.
  */
-export default function PreferencesReview({ onYourCourses, onYourCircle, coursesBusy = false }) {
+export default function PreferencesReview({
+  onYourCourses,
+  onYourCircle,
+  coursesBusy = false,
+  preferencesError = null,
+  preferencesEmpty = false,
+}) {
   const busy = Boolean(coursesBusy);
   return (
     <div style={{ maxWidth: 520, margin: "0 auto", padding: "36px 18px 48px" }}>
@@ -14,6 +20,41 @@ export default function PreferencesReview({ onYourCourses, onYourCircle, courses
       <p style={{ fontSize: 13, color: C.muted, margin: "0 0 32px", textAlign: "center", lineHeight: 1.5 }}>
         Your chat is saved. Pick where you&apos;d like to go.
       </p>
+
+      {preferencesError && (
+        <div
+          style={{
+            margin: "0 0 18px",
+            padding: "10px 12px",
+            border: `1px solid ${C.red}`,
+            borderRadius: 8,
+            background: "#fff5f5",
+            color: C.red,
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ fontWeight: 600 }}>Preferences extraction failed.</strong>{" "}
+          {preferencesError} — check your backend / Ollama logs. Course matches will be limited until this is fixed.
+        </div>
+      )}
+
+      {!preferencesError && preferencesEmpty && (
+        <div
+          style={{
+            margin: "0 0 18px",
+            padding: "10px 12px",
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            background: "#fffaf0",
+            color: C.muted,
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          The LLM returned no preferences from this chat. Try a longer conversation (mention a department, interests, or course codes).
+        </div>
+      )}
 
       {busy && (
         <p style={{ fontSize: 13, color: C.ink, textAlign: "center", margin: "0 0 16px" }}>Loading course recommendations…</p>

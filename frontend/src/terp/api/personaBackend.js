@@ -1,6 +1,9 @@
 /**
  * POST transcript to FastAPI → Ollama → persona + course_insights.
  * Uses VITE_API_BASE_URL or same-origin /api (Vite proxy).
+ *
+ * Separate from postGetPreferences: PersonaLoadingGate calls /api/persona-from-transcript
+ * when USE_LLM_PERSONA is enabled; the backend route may be commented out in main.py.
  */
 
 function personaUrl() {

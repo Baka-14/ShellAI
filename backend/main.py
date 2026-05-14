@@ -1,3 +1,7 @@
+
+# Code with TerpAI integration
+
+
 # """
 # FastAPI backend for TerpAI + ElevenLabs ConvAI (matches bitcamp barebones flow).
 
@@ -214,8 +218,19 @@
 #         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+
+
+# Code with Ollama integration
+#
+# Live student path: ConvAI transcript -> POST /get_preferences (Ollama JSON extraction) ->
+# POST /getCourses (Jupiterp + PlanetTerp). Preference LLM calls use the sync `ollama` client
+# below; shared JSON helpers live in terp_llm.py. The large commented block above is an older
+# httpx + persona-from-transcript variant kept for reference.
+
 import json
 import os
+import time
+import traceback
 from pathlib import Path
 
 import requests
@@ -224,7 +239,7 @@ from elevenlabs.client import ElevenLabs
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-from ollama import chat
+from ollama import chat, ResponseError
 
 from terp_llm import extract_json_object
 from jupiterp import fetch_courses_for_preferences
@@ -237,6 +252,10 @@ load_dotenv()
 
 
 HERE = Path(__file__).resolve().parent
+
+# Ollama tunables for /get_preferences (see backend/.env.example): OLLAMA_NUM_CTX,
+# OLLAMA_KEEP_ALIVE, OLLAMA_PREFERENCES_TEMP, OLLAMA_MODEL. Larger num_ctx needs more VRAM;
+# keep_alive reduces cold-start reload cost between back-to-back sessions.
 
 # Default extraction schema (override with SYSTEM_PROMPT or SYSTEM_PROMPT_FILE — multiline .env is unreliable).
 _DEFAULT_PREF_PROMPT = """
@@ -280,6 +299,7 @@ Rules:
 """.strip()
 
 
+# Resolution order: SYSTEM_PROMPT_FILE (multiline file) -> SYSTEM_PROMPT env -> _DEFAULT_PREF_PROMPT.
 def _load_system_prompt() -> str:
     """Prefer a prompt file (multiline); else SYSTEM_PROMPT from env; else default."""
     file_key = os.getenv("SYSTEM_PROMPT_FILE", "").strip()
@@ -300,31 +320,39 @@ def _load_system_prompt() -> str:
 SYSTEM_PROMPT = _load_system_prompt()
 
 
+# Assembles the user message for Ollama from the session-end POST body (see ConvaiSession.jsx).
+# Truncation caps keep prompts bounded; api_conversation can be very large if ElevenLabs detail is included.
 def _build_preferences_user_content(body: dict) -> str:
     """Everything the model should read (was missing before — user message had no transcript)."""
     parts: list[str] = []
     messages = body.get("messages") or []
+    # Primary transcript: ElevenLabs SDK message list (source + message per turn).
     parts.append("### Conversation (JSON: SDK message list)\n")
     parts.append(json.dumps(messages, ensure_ascii=False, indent=2)[:52000])
 
     raw = (body.get("raw_agent_text") or "").strip()
     if raw:
+        # Fallback plain-text rollup of agent turns when JSON parsing is easier on prose.
         parts.append("\n\n### Concatenated assistant (agent) text\n")
         parts.append(raw[:20000])
 
     prof = body.get("advisor_profile")
     if isinstance(prof, dict) and prof:
+        # Structured intake JSON parsed from the agent wrap-up, when present.
         parts.append("\n\n### Parsed intake (advisor_profile)\n")
         parts.append(json.dumps(prof, ensure_ascii=False, indent=2)[:16000])
 
     api_c = body.get("api_conversation")
     if isinstance(api_c, dict) and api_c:
+        # Optional ElevenLabs canonical conversation payload (truncated; can duplicate messages).
         parts.append("\n\n### Canonical api_conversation (truncated)\n")
         parts.append(json.dumps(api_c, ensure_ascii=False, indent=2)[:24000])
 
     return "".join(parts)
 
 
+# Blocks until Ollama returns: the HTTP request does not complete until inference finishes.
+# Watch uvicorn for [get_preferences] lines (model, user_content_chars, ollama_ok timing).
 def get_structured_preferences(body: dict) -> dict:
     """Call Ollama with format='json'. Expects full POST /get_preferences body."""
     user_content = _build_preferences_user_content(body)
@@ -332,9 +360,20 @@ def get_structured_preferences(body: dict) -> dict:
         return {}
 
     temp = float(os.getenv("OLLAMA_PREFERENCES_TEMP", "0.15"))
+    model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b").strip()
 
+    msg_count = len(body.get("messages") or [])
+    print(
+        f"[get_preferences] model={model} num_ctx={_OLLAMA_NUM_CTX} "
+        f"keep_alive={_OLLAMA_KEEP_ALIVE} temp={temp} "
+        f"messages={msg_count} user_content_chars={len(user_content)}",
+        flush=True,
+    )
+
+    t0 = time.time()
+    # format="json" asks Ollama for JSON-shaped output; options.num_ctx / keep_alive come from env.
     response = chat(
-        model=os.getenv("OLLAMA_MODEL", "kimi-k2.5:cloud").strip(),
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -348,15 +387,31 @@ def get_structured_preferences(body: dict) -> dict:
             },
         ],
         format="json",
-        options={"temperature": temp},
+        options={"temperature": temp, "num_ctx": _OLLAMA_NUM_CTX},
+        keep_alive=_OLLAMA_KEEP_ALIVE,
     )
+    elapsed = time.time() - t0
+
     raw = (getattr(response.message, "content", None) or "").strip()
+    print(
+        f"[get_preferences] ollama_ok in {elapsed:.2f}s, raw_chars={len(raw)}",
+        flush=True,
+    )
     if not raw:
+        print("[get_preferences] WARNING: ollama returned empty content", flush=True)
         return {}
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return extract_json_object(raw) or {}
+        # Models sometimes wrap JSON in fences or extra prose; terp_llm.extract_json_object recovers.
+        recovered = extract_json_object(raw) or {}
+        if not recovered:
+            print(
+                "[get_preferences] WARNING: could not parse JSON. Raw excerpt:",
+                raw[:400],
+                flush=True,
+            )
+        return recovered
 
 
 def fetch_jupiterp_courses(preferences: dict | list | str | None) -> dict:
@@ -388,6 +443,7 @@ def fetch_jupiterp_courses_with_planetterp(preferences: dict | list | str | None
 
 
 app = FastAPI()
+# Student UI + admin call these routes; Vite dev proxy forwards /get_preferences and /getCourses to port 8000.
 origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
@@ -400,12 +456,12 @@ app.include_router(terpai_umd_router)
 
 # Prefer ELEVENLABS_* (matches backend/.env.example). ELEVEN_LABS_* kept for older local .env files.
 _ELEVENLABS_API_KEY = (
-    os.getenv("ELEVENLABS_API_KEY", "").strip()
-    or os.getenv("ELEVEN_LABS_API", "").strip()
+    os.getenv("VITE_ELEVENLABS_API_KEY", "").strip()
+    or os.getenv("ELEVENLABS_API_KEY", "").strip()
 )
 _ELEVENLABS_AGENT_ID = (
-    os.getenv("ELEVENLABS_AGENT_ID", "").strip()
-    or os.getenv("ELEVEN_LABS_AGENT_ID", "").strip()
+    os.getenv("VITE_ELEVENLABS_AGENT_ID", "").strip()
+    or os.getenv("ELEVENLABS_AGENT_ID", "").strip()
 )
 _elevenlabs_client = ElevenLabs(api_key=_ELEVENLABS_API_KEY) if _ELEVENLABS_API_KEY else None
 
@@ -443,16 +499,17 @@ def fetch_conversation(conversation_id: str):
 
 
 @app.post("/get_preferences")
+# Body: session-end payload from ConvaiSession (messages, advisor_profile, optional api_conversation).
+# Response: preferences JSON for /getCourses and the preferences review step.
 def get_preferences(body: dict):
     preferences = get_structured_preferences(body if isinstance(body, dict) else {})
     print("======================")
     print(preferences)
-
-
     return preferences
 
 
 @app.post("/getCourses")
+# Expects body.preferences from a prior POST /get_preferences; enriches Jupiterp rows with PlanetTerp.
 def get_courses(body: dict = Body(default_factory=dict)):
     """
     Returns `courses`: Jupiterp + PlanetTerp payload from `fetch_jupiterp_courses_with_planetterp`.
@@ -460,34 +517,11 @@ def get_courses(body: dict = Body(default_factory=dict)):
     (Previously also returned `terpai_scheduling` from `terpai_client.compute_terpai_scheduling_summary` — re-enable import + merge into response if needed.)
     """
     prefs = body.get("preferences") if isinstance(body, dict) else None
-    # if prefs is None:
-        # prefs = {
-        #     "student": {"program": "MSCS", "year": 1},
-        #     "interests": [
-        #         "natural language processing",
-        #         "data visualization",
-        #         "improving interactivity in static charts",
-        #     ],
-        #     "interest_keywords": [
-        #         "nlp",
-        #         "natural language processing",
-        #         "data visualization",
-        #         "visualization",
-        #         "charts",
-        #         "interactivity",
-        #     ],
-        #     "constraints": {"department": "CMSC"},
-        #     "social": {"wants_study_partners": False},
-        #     "schedule_constraints": {"free_days": ["Friday"]},
-        # }
+
     courses = fetch_jupiterp_courses_with_planetterp(
         prefs if isinstance(prefs, (dict, list)) else None
     )
-    # terpai_scheduling = compute_terpai_scheduling_summary(
-    #     courses,
-    #     preferences=prefs if isinstance(prefs, dict) else None,
-    # )
-    # out = {"courses": courses, "terpai_scheduling": terpai_scheduling}
+    
     out = {"courses": courses}
     # print(out)
     return out

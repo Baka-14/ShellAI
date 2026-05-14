@@ -12,3 +12,5 @@ dist/
 # TerpAI CLI secrets (backend_example)
 backend_example/.terpai_bearer
 backend_example/.env.terpai
+
+backend/venv/

@@ -26,6 +26,7 @@ export default function ConvaiSession({ onComplete, onError }) {
   const messagesRef = useRef([]);
   const finalizedRef = useRef(false);
 
+  // End-of-session: optional ElevenLabs fetches, then blocking POST /get_preferences, then onComplete.
   const finalize = useCallback(
     async (conversationId) => {
       if (finalizedRef.current) return;
@@ -83,12 +84,14 @@ export default function ConvaiSession({ onComplete, onError }) {
         get_conversation: getConversationResponse,
       };
 
+      // UI shows "wrapping" until Ollama preference extraction returns (can take tens of seconds locally).
       setStatus("wrapping");
       let preferences = null;
       let preferencesError = null;
       try {
         preferences = await postGetPreferences(sessionEndPayload);
       } catch (err) {
+        // Non-fatal: TerpApp still opens preferencesReview with preferencesError set.
         preferencesError = err instanceof Error ? err.message : String(err);
         console.warn("[get_preferences]", err);
       }

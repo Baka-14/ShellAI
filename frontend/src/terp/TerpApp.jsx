@@ -324,6 +324,7 @@ export default function TerpApp() {
     [preferencesGate, USE_LLM_PERSONA, USE_EXAMPLE_ADVISOR, circleReady, finishLocalSession],
   );
 
+  // preferences / preferencesError were already fetched in ConvaiSession before this handler runs.
   const handleConvaiComplete = useCallback(
     ({
       advisorProfile: ap,

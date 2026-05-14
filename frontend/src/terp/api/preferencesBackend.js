@@ -1,6 +1,9 @@
 /**
  * POST session transcript to FastAPI `/get_preferences` so an LLM can infer user preferences.
  * Uses VITE_API_BASE_URL when set; otherwise same-origin `/get_preferences` (Vite dev proxy).
+ *
+ * Payload shape matches ConvaiSession sessionEndPayload (messages, advisor_profile, etc.).
+ * The browser waits on this response before preferencesReview; Ollama runs synchronously on the server.
  */
 
 export async function postGetPreferences(payload) {

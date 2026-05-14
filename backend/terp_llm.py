@@ -6,6 +6,9 @@ Run Ollama locally: https://ollama.com — `ollama pull llama3.2`
 
 Cloud models (e.g. kimi-k2.5:cloud) need the Ollama app + account configured the same
 way as in backend_example/llm.py.
+
+POST /get_preferences in main.py uses the `ollama` Python client directly; this module
+supplies extract_json_object and optional async httpx chat for persona / legacy routes.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
 
 
+# Async HTTP chat against Ollama /api/chat (used by commented persona-from-transcript flow in main.py).
 async def ollama_chat(messages: list[dict[str, str]], *, model: str | None = None) -> str:
     m = model or OLLAMA_MODEL
     url = f"{OLLAMA_HOST}/api/chat"
@@ -33,6 +37,7 @@ async def ollama_chat(messages: list[dict[str, str]], *, model: str | None = Non
     return str(msg.get("content") or "")
 
 
+# Shared by /get_preferences when json.loads fails on the model reply.
 def extract_json_object(text: str) -> dict[str, Any] | None:
     """Parse first JSON object from model output (handles ```json fences)."""
     if not text or not text.strip():
@@ -54,6 +59,7 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
 VALID_PERSONAS = frozenset({"researcher", "closer", "explorer"})
 
 
+# Normalizes persona-from-transcript LLM output for PersonaLoadingGate (not /get_preferences).
 def normalize_persona_response(raw: dict[str, Any] | None) -> dict[str, Any]:
     """Ensure safe shape for the frontend."""
     out: dict[str, Any] = {
@@ -104,6 +110,7 @@ Use the transcript text. If unclear, pick the best fit and explain briefly.
 Include up to 5 course_insights for courses explicitly mentioned or strongly implied; otherwise suggest plausible UMD CMSC/DATA/INST codes from context."""
 
 
+# User payload for persona-from-transcript (plain transcript + optional advisor JSON).
 def build_persona_user_payload(transcript_text: str, advisor_json: dict[str, Any] | None) -> str:
     parts = ["### Transcript (user + agent turns, plain text)\n", transcript_text[:24000]]
     if advisor_json:
